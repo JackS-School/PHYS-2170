@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stern-Gerlach analyzer simulation</title>
+<style>
+:root{--bg:#0e1a24;--panel:#16262f;--line:#2b4250;--text:#e4ecf1;--dim:#92a8b5;--plus:#f0b34a;--minus:#5fb3d6;--atom:#dfe7ee}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:20px}
+h1{font:600 26px Palatino,"Palatino Linotype",Georgia,serif;margin:0 0 4px}
+p.sub{margin:0 0 16px;color:var(--dim);max-width:75ch}
+.wrap{max-width:1000px;margin:0 auto}
+canvas{width:100%;height:auto;background:#0a141c;border:1px solid var(--line);border-radius:6px;display:block}
+.bar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 14px;margin:12px 0}
+.bar label{color:var(--dim)}
+button,select,input[type=number]{font:inherit;color:var(--text);background:#20363f;border:1px solid var(--line);border-radius:4px;padding:5px 10px}
+button{cursor:pointer}
+button:hover{background:#2a4753}
+button.go{background:#2f5d4e;border-color:#3f7d69}
+button.go:hover{background:#38705e}
+:focus-visible{outline:2px solid var(--plus);outline-offset:2px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.card.off{opacity:.55}
+.card h2{font:600 18px Palatino,Georgia,serif;margin:0 0 8px;display:flex;justify-content:space-between;align-items:center}
+.row{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}
+.row input[type=range]{flex:1;min-width:110px;accent-color:var(--plus)}
+input[type=number]{width:72px}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-variant-numeric:tabular-nums}
+td,th{padding:3px 4px;text-align:right;border-top:1px solid var(--line)}
+th{color:var(--dim);font-weight:500}
+td:first-child,th:first-child{text-align:left}
+.p{color:var(--plus)}.m{color:var(--minus)}
+.note{color:var(--dim);font-size:13px;margin-top:12px;max-width:80ch}
+.small{font-size:13px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Stern-Gerlach analyzer</h1>
+<p class="sub">Silver atoms (spin ½) leave the oven, pass through up to three analyzers, and are counted in the + or − channel. Rotate each analyzer and choose which channel feeds the next one.</p>
+
+<canvas id="cv" width="960" height="500" aria-label="Stern-Gerlach apparatus diagram"></canvas>
+
+<div class="bar">
+  <label>Atoms entering analyzer 1:
+    <select id="init">
+      <option value="+z">+z polarized</option>
+      <option value="-z">−z polarized</option>
+      <option value="+x">+x polarized</option>
+      <option value="-x">−x polarized</option>
+      <option value="unp">Unpolarized (random)</option>
+    </select>
+  </label>
+  <span>
+    <button class="go" data-n="1">Send 1</button>
+    <button class="go" data-n="10">Send 10</button>
+    <button class="go" data-n="100">Send 100</button>
+    <button class="go" data-n="1000">Send 1000</button>
+  </span>
+  <button id="reset">Reset counts</button>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<p class="note">Axis angle θ is measured in the x–z plane from +z toward +x, so θ = 0° is +z, 90° is +x, 180° is −z and 270° is −x. In the diagram the + channel is always drawn upward and the rotating magnet shows the analyzer's axis. For an atom polarized along angle φ, the probability of exiting the + channel is cos²[(θ − φ)/2]. An atom leaving the + channel is polarized along θ; one leaving the − channel is polarized opposite (θ + 180°). Any prior polarization is erased by a measurement, so changing any setting resets the counts.</p>
+</div>
+
+<script>
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const W=cv.width,H=cv.height,SPEED=480;
+const PLUS='#f0b34a',MINUS='#5fb3d6';
+const initAngle={'+z':0,'-z':180,'+x':90,'-x':270,'unp':null};
+const an=[{on:true,th:0,feed:'+'},{on:false,th:90,feed:'+'},{on:false,th:0,feed:'+'}];
+let counts,atoms=[],pending=0,last=performance.now(),dirty=true;
+let cx=[],cy=[];
+
+function resetCounts(){counts=[0,1,2].map(()=>({in:0,'+':0,'-':0}));atoms=[];pending=0;dirty=true}
+function geometry(){
+  cy[0]=250;
+  for(let i=0;i<3;i++){cx[i]=190+i*280;if(i>0)cy[i]=cy[i-1]+(an[i].feed==='+'?-70:70)}
+}
+function nextOn(i,ch){return i+1<3&&an[i+1].on&&an[i+1].feed===ch}
+function exitEnd(i,ch){return [cx[i]+150,cy[i]+(ch==='+'?-70:70)]}
+
+/* ---------- physics ---------- */
+function incomingState(i){
+  if(i===0)return initAngle[document.getElementById('init').value];
+  return an[i-1].th+(an[i].feed==='+'?0:180);
+}
+function probPlus(i){
+  const s=incomingState(i);
+  if(s===null)return .5;
+  return Math.cos((an[i].th-s)*Math.PI/360)**2;
+}
+function spawn(){
+  let s=initAngle[document.getElementById('init').value];
+  const pts=[[40,cy[0]],[cx[0]-40,cy[0]]],ev=[];
+  let i=0;
+  for(;;){
+    const a=an[i];
+    const p=s===null?.5:Math.cos((a.th-s)*Math.PI/360)**2;
+    const ch=Math.random()<p?'+':'-';
+    s=a.th+(ch==='+'?0:180);
+    pts.push([cx[i]+40,cy[i]]);
+    ev.push({pt:pts.length-1,i,ch,done:false});
+    if(nextOn(i,ch)){i++;pts.push([cx[i]-40,cy[i]])}
+    else{pts.push(exitEnd(i,ch));break}
+  }
+  const cum=[0];
+  for(let k=1;k<pts.length;k++)cum.push(cum[k-1]+Math.hypot(pts[k][0]-pts[k-1][0],pts[k][1]-pts[k-1][1]));
+  ev.forEach(e=>e.d=cum[e.pt]);
+  atoms.push({pts,cum,ev,d:0,ch:ev[0].ch});
+}
+
+/* ---------- drawing ---------- */
+function line(x1,y1,x2,y2,c,w){ctx.strokeStyle=c;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}
+function drawAnalyzer(i){
+  const a=an[i],x=cx[i],y=cy[i];
+  ctx.save();ctx.translate(x,y);
+  ctx.fillStyle='#10202a';ctx.strokeStyle='#38566a';ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(0,0,46,0,7);ctx.fill();ctx.stroke();
+  ctx.rotate(a.th*Math.PI/180);
+  ctx.fillStyle='#b8473f';ctx.fillRect(-26,-34,52,18);   // north pole
+  ctx.fillStyle='#3b6ea5';ctx.fillRect(-26,16,52,18);    // south pole
+  ctx.fillStyle='#fff';ctx.font='bold 13px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('N',0,-25);ctx.fillText('S',0,25);
+  ctx.strokeStyle=PLUS;ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,10);ctx.lineTo(0,-10);ctx.moveTo(-5,-5);ctx.lineTo(0,-11);ctx.lineTo(5,-5);ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle='#e4ecf1';ctx.font='600 14px system-ui';ctx.textAlign='center';ctx.textBaseline='alphabetic';
+  ctx.fillText('Analyzer '+(i+1)+'  θ = '+a.th+'°',x,y+68);
+}
+function drawExit(i,ch){
+  const x0=cx[i]+40,y0=cy[i],col=ch==='+'?PLUS:MINUS;
+  const hasNext=nextOn(i,ch);
+  const [ex,ey]=hasNext?[cx[i+1]-40,cy[i+1]]:exitEnd(i,ch);
+  line(x0,y0,ex,ey,col,2);
+  ctx.fillStyle=col;ctx.font='bold 15px system-ui';ctx.textAlign='left';ctx.textBaseline='middle';
+  ctx.fillText(ch==='+'?'+':'−',x0+14,y0+(ch==='+'?-14:14));
+  if(!hasNext){
+    ctx.fillStyle='#10202a';ctx.strokeStyle=col;ctx.lineWidth=2;
+    const bx=ex-8,by=ch==='+'?ey-26:ey-6;
+    ctx.beginPath();ctx.roundRect(bx,by,76,32,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#e4ecf1';ctx.font='600 16px system-ui';ctx.textAlign='center';
+    ctx.fillText(counts[i][ch],bx+38,by+17);
+  }
+}
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // source
+  ctx.fillStyle='#2a3d49';ctx.strokeStyle='#4a6677';ctx.lineWidth=2;
+  ctx.beginPath();ctx.roundRect(8,cy[0]-30,34,60,5);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#92a8b5';ctx.font='13px system-ui';ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  ctx.fillText('Oven',8,cy[0]+50);
+  line(42,cy[0],cx[0]-40,cy[0],'#6b8394',2);
+  for(let i=0;i<3;i++){
+    if(!an[i].on)break;
+    drawExit(i,'+');drawExit(i,'-');
+    drawAnalyzer(i);
+  }
+  ctx.fillStyle='#dfe7ee';
+  for(const a of atoms){
+    const k=a.cum.findIndex(c=>c>=a.d);
+    const j=k<=0?1:k;
+    const f=(a.d-a.cum[j-1])/((a.cum[j]-a.cum[j-1])||1);
+    const x=a.pts[j-1][0]+(a.pts[j][0]-a.pts[j-1][0])*f;
+    const y=a.pts[j-1][1]+(a.pts[j][1]-a.pts[j-1][1])*f;
+    ctx.beginPath();ctx.arc(x,y,3.5,0,7);ctx.fill();
+  }
+}
+
+/* ---------- UI ---------- */
+const cards=document.getElementById('cards');
+function buildCards(){
+  cards.innerHTML='';
+  an.forEach((a,i)=>{
+    const c=document.createElement('div');c.className='card'+(a.on?'':' off');c.id='card'+i;
+    let head='<h2>Analyzer '+(i+1)+'</h2>';
+    let feed='';
+    if(i>0){
+      head='<h2>Analyzer '+(i+1)+'<label class="small"><input type="checkbox" id="on'+i+'" '+(a.on?'checked':'')+(i===2&&!an[1].on?' disabled':'')+'> in use</label></h2>';
+      feed='<div class="row"><label for="feed'+i+'">Receives atoms from analyzer '+i+' channel</label><select id="feed'+i+'"'+(a.on?'':' disabled')+'><option value="+"'+(a.feed==='+'?' selected':'')+'>+</option><option value="-"'+(a.feed==='-'?' selected':'')+'>−</option></select></div>';
+    }
+    c.innerHTML=head+feed+
+      '<div class="row"><label for="th'+i+'">Axis θ</label><input type="range" id="th'+i+'" min="0" max="360" step="1" value="'+a.th+'"'+(a.on?'':' disabled')+'><input type="number" id="n'+i+'" min="0" max="360" value="'+a.th+'"'+(a.on?'':' disabled')+'><span>°</span></div>'+
+      '<div class="row"><span class="small">Set axis:</span><button data-i="'+i+'" data-a="0">+z</button><button data-i="'+i+'" data-a="90">+x</button><button data-i="'+i+'" data-a="180">−z</button><button data-i="'+i+'" data-a="270">−x</button></div>'+
+      '<table><tr><th></th><th>Count</th><th>Fraction</th><th>Predicted</th></tr>'+
+      '<tr><td>Entered</td><td id="in'+i+'">0</td><td></td><td></td></tr>'+
+      '<tr><td class="p">+ channel</td><td id="p'+i+'">0</td><td id="pf'+i+'"></td><td id="pp'+i+'"></td></tr>'+
+      '<tr><td class="m">− channel</td><td id="m'+i+'">0</td><td id="mf'+i+'"></td><td id="mp'+i+'"></td></tr></table>';
+    cards.appendChild(c);
+    c.querySelector('#th'+i).oninput=e=>setAngle(i,+e.target.value);
+    c.querySelector('#n'+i).onchange=e=>setAngle(i,((Math.round(+e.target.value)%360)+360)%360);
+    c.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>setAngle(i,+b.dataset.a));
+    if(i>0){
+      c.querySelector('#on'+i).onchange=e=>{
+        a.on=e.target.checked;
+        if(!a.on&&i===1)an[2].on=false;
+        changed(true);
+      };
+      c.querySelector('#feed'+i).onchange=e=>{a.feed=e.target.value;changed(false)};
+    }
+  });
+  updateCounts();
+}
+function setAngle(i,v){
+  an[i].th=v;
+  document.getElementById('th'+i).value=v;
+  document.getElementById('n'+i).value=v;
+  changed(false);
+}
+function changed(rebuild){
+  resetCounts();geometry();
+  if(rebuild)buildCards();else updateCounts();
+}
+function pct(n,d){return d?(100*n/d).toFixed(1)+'%':'–'}
+function updateCounts(){
+  for(let i=0;i<3;i++){
+    const c=counts[i],on=an[i].on;
+    document.getElementById('in'+i).textContent=c.in;
+    document.getElementById('p'+i).textContent=c['+'];
+    document.getElementById('m'+i).textContent=c['-'];
+    document.getElementById('pf'+i).textContent=pct(c['+'],c.in);
+    document.getElementById('mf'+i).textContent=pct(c['-'],c.in);
+    const pp=probPlus(i);
+    document.getElementById('pp'+i).textContent=on?(100*pp).toFixed(1)+'%':'';
+    document.getElementById('mp'+i).textContent=on?(100*(1-pp)).toFixed(1)+'%':'';
+  }
+}
+document.getElementById('init').onchange=()=>changed(false);
+document.getElementById('reset').onclick=resetCounts;
+document.querySelectorAll('button[data-n]').forEach(b=>b.onclick=()=>{pending+=+b.dataset.n});
+
+function frame(t){
+  const dt=Math.min(.05,(t-last)/1000);last=t;
+  if(pending>0){
+    const k=Math.min(pending,Math.max(1,Math.ceil(pending/40)));
+    for(let n=0;n<k;n++)spawn();
+    pending-=k;
+  }
+  for(const a of atoms){
+    a.d+=SPEED*dt;
+    for(const e of a.ev){
+      if(!e.done&&a.d>=e.d){e.done=true;counts[e.i].in++;counts[e.i][e.ch]++;dirty=true}
+    }
+  }
+  atoms=atoms.filter(a=>a.d<a.cum[a.cum.length-1]);
+  // final flush for atoms removed this frame is covered since events fire at earlier distances
+  if(dirty){updateCounts();dirty=false}
+  draw();
+  requestAnimationFrame(frame);
+}
+resetCounts();geometry();buildCards();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
