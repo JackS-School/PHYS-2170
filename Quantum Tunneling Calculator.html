@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tunneling Calculator</title>
+<style>
+:root{--bg:#f3f6f8;--panel:#ffffff;--ink:#14242e;--mute:#5b6e7a;--line:#cfd9e0;--accent:#0b6e8a;--warn:#a8321f;--curve:#0b6e8a;--barrier:#dbe7ee;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1a21;--panel:#15252e;--ink:#e4eef3;--mute:#8da2ae;--line:#2a3f4b;--accent:#5cc3de;--warn:#ff907c;--curve:#5cc3de;--barrier:#1f3541}}
+:root[data-theme="dark"]{--bg:#0e1a21;--panel:#15252e;--ink:#e4eef3;--mute:#8da2ae;--line:#2a3f4b;--accent:#5cc3de;--warn:#ff907c;--curve:#5cc3de;--barrier:#1f3541}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 Georgia,"Times New Roman",serif}
+main{max-width:760px;margin:0 auto;padding:28px 18px 40px}
+h1{font-size:1.7rem;margin:0 0 4px;font-weight:600}
+.sub{color:var(--mute);margin:0 0 22px}
+.eq{font-family:"Cambria Math",Georgia,serif;font-size:1.15rem;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin-bottom:22px;overflow-x:auto;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:22px}
+label{display:block;font-size:.92rem;color:var(--mute);margin-bottom:4px}
+input,select{width:100%;font:inherit;font-size:1rem;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+.result{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:18px 20px;margin-bottom:22px}
+.big{font-size:2.3rem;line-height:1.1;margin:2px 0 4px}
+.rows{display:grid;grid-template-columns:auto 1fr;gap:4px 18px;margin-top:12px;font-size:.95rem}
+.rows dt{color:var(--mute)}.rows dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+.warn{color:var(--warn)}
+svg{width:100%;height:auto;display:block;background:var(--panel);border:1px solid var(--line);border-radius:6px}
+svg text{fill:var(--mute);font:12px Georgia,serif}
+.note{color:var(--mute);font-size:.88rem;margin-top:14px}
+</style>
+</head>
+<body>
+<main>
+<h1>Quantum tunneling calculator</h1>
+<p class="sub">Transmission through a rectangular barrier for a particle with one definite energy.</p>
+<div class="eq">T ≈ e<sup>−2κL</sup>,&nbsp;&nbsp; κ = √(2m(V₀ − E)) / ħ</div>
+
+<div class="grid">
+<div><label for="part">Particle</label>
+<select id="part">
+<option value="9.1093837015e-31">Electron</option>
+<option value="1.67262192369e-27">Proton</option>
+<option value="1.67492749804e-27">Neutron</option>
+<option value="6.6446573357e-27">Alpha particle</option>
+<option value="custom">Custom mass…</option>
+</select></div>
+<div id="cm" hidden><label for="mass">Mass (kg)</label><input id="mass" type="number" step="any" value="9.1093837e-31"></div>
+<div><label for="E">Particle energy E (eV)</label><input id="E" type="number" step="any" min="0" value="5"></div>
+<div><label for="V">Barrier height V₀ (eV)</label><input id="V" type="number" step="any" value="10"></div>
+<div><label for="L">Barrier width L (nm)</label><input id="L" type="number" step="any" min="0" value="0.5"></div>
+</div>
+
+<div class="result" aria-live="polite">
+<div id="msg" class="warn" hidden></div>
+<div id="out">
+<div>Transmission probability</div>
+<div class="big" id="T">—</div>
+<dl class="rows">
+<dt>Decay constant κ</dt><dd id="k">—</dd>
+<dt>Penetration depth 1/κ</dt><dd id="d">—</dd>
+<dt>Exponent 2κL</dt><dd id="x">—</dd>
+</dl>
+</div>
+</div>
+
+<svg id="plot" viewBox="0 0 700 220" role="img" aria-label="Probability density decaying inside the barrier"></svg>
+<p class="note">The curve shows the probability density falling as e<sup>−2κx</sup> across the barrier, scaled to 1 at the entrance. Boundary-matching prefactors and the reflected wave are not computed.</p>
+</main>
+
+<script>
+const hbar=1.054571817e-34, eV=1.602176634e-19;
+const $=id=>document.getElementById(id);
+
+function sci(log10v){
+  if(log10v>-3) return Math.pow(10,log10v).toPrecision(4);
+  const e=Math.floor(log10v), m=Math.pow(10,log10v-e);
+  return m.toFixed(3)+" × 10"+toSup(e);
+}
+function toSup(n){
+  const s={"-":"⁻","0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹"};
+  return String(n).split("").map(c=>s[c]).join("");
+}
+function fmt(v,u){
+  if(v===0) return "0 "+u;
+  return (Math.abs(v)<1e-3||Math.abs(v)>=1e6? v.toExponential(3): v.toPrecision(4))+" "+u;
+}
+
+function draw(frac){ // frac: exponent per unit of barrier = 2κL
+  const svg=$("plot"), x0=60, x1=640, yT=30, yB=180;
+  const pts=[];
+  const logFloor=-12; // plot on linear axis, clamp tiny values
+  for(let i=0;i<=100;i++){
+    const t=i/100, v=Math.exp(-frac*t);
+    pts.push((x0+(x1-x0)*t).toFixed(1)+","+(yB-(yB-yT)*v).toFixed(1));
+  }
+  svg.innerHTML=
+   `<rect x="${x0}" y="${yT-10}" width="${x1-x0}" height="${yB-yT+10}" fill="var(--barrier)"/>`+
+   `<line x1="30" y1="${yB}" x2="670" y2="${yB}" stroke="var(--line)"/>`+
+   `<polyline points="${pts.join(" ")}" fill="none" stroke="var(--curve)" stroke-width="2.5"/>`+
+   `<text x="${x0}" y="${yB+18}" text-anchor="middle">0</text>`+
+   `<text x="${x1}" y="${yB+18}" text-anchor="middle">L</text>`+
+   `<text x="${(x0+x1)/2}" y="${yB+18}" text-anchor="middle">position in barrier</text>`+
+   `<text x="${x0-8}" y="${yT+4}" text-anchor="end">1</text>`+
+   `<text x="${x0-8}" y="${yB}" text-anchor="end">0</text>`;
+}
+
+function calc(){
+  let m = $("part").value==="custom" ? parseFloat($("mass").value) : parseFloat($("part").value);
+  $("cm").hidden = $("part").value!=="custom";
+  const E=parseFloat($("E").value), V=parseFloat($("V").value), L=parseFloat($("L").value);
+  const msg=$("msg"), out=$("out");
+  if([m,E,V,L].some(n=>!isFinite(n)) || m<=0 || L<0 || E<0){
+    msg.hidden=false; out.hidden=true;
+    msg.textContent="Enter a positive mass, a non-negative energy, and a non-negative width.";
+    return;
+  }
+  if(E>=V){
+    msg.hidden=false; out.hidden=true;
+    msg.textContent="E must be below V₀. The exponential approximation only describes a particle with less energy than the barrier.";
+    draw(0); return;
+  }
+  msg.hidden=true; out.hidden=false;
+  const kappa=Math.sqrt(2*m*(V-E)*eV)/hbar;   // 1/m
+  const Lm=L*1e-9;
+  const x=2*kappa*Lm;
+  const log10T=-x/Math.LN10;
+  $("T").textContent=sci(log10T);
+  $("k").textContent=fmt(kappa*1e-9,"nm⁻¹");
+  $("d").textContent=fmt(1e9/kappa,"nm");
+  $("x").textContent=fmt(x,"");
+  draw(x);
+}
+["part","mass","E","V","L"].forEach(id=>$(id).addEventListener("input",calc));
+calc();
+</script>
+</body>
+</html>
